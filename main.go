@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"sync"
@@ -14,7 +15,6 @@ const (
 	Interval   = 5 * time.Second
 )
 
-// Потокобезопасная версия стадии конвейера, фильтрующая отрицательные числа
 func filterNegative(done <-chan struct{}, input <-chan int) <-chan int {
 	output := make(chan int)
 	go func() {
@@ -22,13 +22,18 @@ func filterNegative(done <-chan struct{}, input <-chan int) <-chan int {
 		for {
 			select {
 			case <-done:
+				log.Println("filterNegative: получен сигнал завершения")
 				return
 			case i, isChannelOpen := <-input:
 				if !isChannelOpen {
+					log.Println("filterNegative: входной канал закрыт")
 					return
 				}
 				if i >= 0 {
+					log.Println("filterNegative: передача значения", i)
 					output <- i
+				} else {
+					log.Println("filterNegative: отсеивание значения", i)
 				}
 			}
 		}
@@ -36,7 +41,6 @@ func filterNegative(done <-chan struct{}, input <-chan int) <-chan int {
 	return output
 }
 
-// Потокобезопасная версия стадии конвейера, фильтрующая числа, не кратные 3
 func filterNonMultipleOfThree(done <-chan struct{}, input <-chan int) <-chan int {
 	output := make(chan int)
 	go func() {
@@ -44,13 +48,18 @@ func filterNonMultipleOfThree(done <-chan struct{}, input <-chan int) <-chan int
 		for {
 			select {
 			case <-done:
+				log.Println("filterNonMultipleOfThree: получен сигнал завершения")
 				return
 			case i, isChannelOpen := <-input:
 				if !isChannelOpen {
+					log.Println("filterNonMultipleOfThree: входной канал закрыт")
 					return
 				}
 				if i != 0 && i%3 == 0 {
+					log.Println("filterNonMultipleOfThree: передача значения", i)
 					output <- i
+				} else {
+					log.Println("filterNonMultipleOfThree: отсеивание значения", i)
 				}
 			}
 		}
@@ -58,7 +67,6 @@ func filterNonMultipleOfThree(done <-chan struct{}, input <-chan int) <-chan int
 	return output
 }
 
-// Кольцевой буфер
 type RingBuffer struct {
 	data    []int
 	maxSize int
@@ -68,7 +76,6 @@ type RingBuffer struct {
 	mu      sync.Mutex
 }
 
-// Создание нового кольцевого буфера заданного размера
 func NewRingBuffer(maxSize int) *RingBuffer {
 	return &RingBuffer{
 		data:    make([]int, maxSize),
@@ -79,37 +86,36 @@ func NewRingBuffer(maxSize int) *RingBuffer {
 	}
 }
 
-// Добавление элемента в буфер с проверкой переполнения
 func (rb *RingBuffer) Push(val int) bool {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
-	if rb.count == rb.maxSize { // Проверка на переполнение
-		return false // Возвращаем false, если буфер полон
+	if rb.count == rb.maxSize {
+		log.Println("RingBuffer: буфер полон, невозможно добавить значение", val)
+		return false
 	}
 	rb.data[rb.nextIn] = val
 	rb.nextIn = (rb.nextIn + 1) % rb.maxSize
 	rb.count++
-	return true // Возвращаем true, если добавление прошло успешно
+	log.Println("RingBuffer: добавлено значение", val)
+	return true
 }
 
-// Извлечение элемента из буфера
 func (rb *RingBuffer) Pop() int {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 	val := rb.data[rb.nextOut]
 	rb.nextOut = (rb.nextOut + 1) % rb.maxSize
 	rb.count--
+	log.Println("RingBuffer: извлечено значение", val)
 	return val
 }
 
-// Количество элементов в буфере
 func (rb *RingBuffer) Count() int {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 	return rb.count
 }
 
-// Источник данных для конвейера
 func dataSource(done chan<- struct{}) <-chan int {
 	output := make(chan int)
 	scanner := bufio.NewScanner(os.Stdin)
@@ -118,14 +124,16 @@ func dataSource(done chan<- struct{}) <-chan int {
 		for scanner.Scan() {
 			input := scanner.Text()
 			if input == "exit" {
-				close(done) // Отправляем сигнал для завершения
+				log.Println("dataSource: получена команда выхода")
+				close(done)
 				return
 			}
 			num, err := strconv.Atoi(input)
 			if err == nil {
+				log.Println("dataSource: получено значение", num)
 				output <- num
 			} else {
-				fmt.Println("Введено нечисловое значение, игнорируется:", input)
+				log.Println("dataSource: игнорируется нечисловой ввод", input)
 			}
 		}
 	}()
@@ -134,20 +142,21 @@ func dataSource(done chan<- struct{}) <-chan int {
 
 func dataConsumer(done <-chan struct{}, input <-chan int, bufferSize int, interval time.Duration) {
 	buffer := NewRingBuffer(bufferSize)
-
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-done:
+			log.Println("dataConsumer: получен сигнал завершения")
 			return
 		case val, isOpen := <-input:
 			if !isOpen {
+				log.Println("dataConsumer: входной канал закрыт")
 				return
 			}
 			if !buffer.Push(val) {
-				fmt.Println("Буфер переполнен, значение игнорируется:", val)
+				log.Println("dataConsumer: буфер полон, значение игнорируется", val)
 			}
 		case <-ticker.C:
 			for buffer.Count() > 0 {
@@ -158,13 +167,9 @@ func dataConsumer(done <-chan struct{}, input <-chan int, bufferSize int, interv
 }
 
 func main() {
-	done := make(chan struct{}) // Используем пустую структуру для сигнального канала
-
+	done := make(chan struct{})
 	pipeline := filterNonMultipleOfThree(done, filterNegative(done, dataSource(done)))
-
 	go dataConsumer(done, pipeline, BufferSize, Interval)
-
-	// Ожидание сигнала для завершения
 	<-done
-	fmt.Println("Программа завершила работу.")
+	log.Println("main: программа завершила работу")
 }
